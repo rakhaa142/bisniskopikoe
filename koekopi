@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Catatan Keuangan</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f4f4f4; }
+    h2 { text-align: center; }
+    form, table {
+      max-width: 900px; margin: auto; background: white; padding: 15px;
+      border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    input, select, button { width: 100%; padding: 8px; margin: 8px 0; }
+    table { width: 100%; margin-top: 20px; border-collapse: collapse; }
+    th, td { padding: 10px; border-bottom: 1px solid #ccc; text-align: left; }
+    .summary, .filter { text-align: center; margin-top: 20px; font-weight: bold; }
+    #exportBtn { display: block; margin: 20px auto 0; background-color: green; color: white; border: none; cursor: pointer; }
+    td[contenteditable] { background-color: #f0f8ff; }
+    .hapus-btn { color: red; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <h2>Catatan Keuangan Bisnis</h2>
+
+  <form id="formTransaksi">
+    <label>Jenis Transaksi:</label>
+    <select id="jenis">
+      <option value="pemasukan">Pemasukan</option>
+      <option value="pengeluaran">Pengeluaran</option>
+      <option value="gaji">Gaji Karyawan</option>
+    </select>
+
+    <label>Keterangan:</label>
+    <input type="text" id="keterangan" placeholder="Contoh: Penjualan kopi">
+
+    <label>Jumlah (Rp):</label>
+    <input type="text" id="jumlah" placeholder="Contoh: 1.800.000">
+
+    <button type="submit">Catat</button>
+  </form>
+
+  <div class="filter">
+    <label>Filter Tanggal:</label>
+    <select id="filterTanggal">
+      <option value="semua">Semua</option>
+      <option value="hari_ini">Hari Ini</option>
+      <option value="kemarin">Kemarin</option>
+      <option value="bulan_lalu">Bulan Lalu</option>
+      <option value="tahun_lalu">Tahun Lalu</option>
+    </select>
+    <label>Jenis:</label>
+    <select id="filterJenis">
+      <option value="semua">Semua</option>
+      <option value="pemasukan">Pemasukan</option>
+      <option value="pengeluaran">Pengeluaran</option>
+      <option value="gaji">Gaji</option>
+    </select>
+  </div>
+
+  <table id="tabelTransaksi">
+    <thead>
+      <tr>
+        <th>Waktu</th>
+        <th>Jenis</th>
+        <th>Keterangan</th>
+        <th>Jumlah</th>
+        <th>Cup</th>
+        <th>Aksi</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <button id="exportBtn">Export ke Excel</button>
+
+  <div class="summary" id="ringkasan"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script>
+    const form = document.getElementById('formTransaksi');
+    const tbody = document.querySelector('#tabelTransaksi tbody');
+    const ringkasan = document.getElementById('ringkasan');
+    const jumlahInput = document.getElementById('jumlah');
+    const exportBtn = document.getElementById('exportBtn');
+    const filterTanggal = document.getElementById('filterTanggal');
+    const filterJenis = document.getElementById('filterJenis');
+
+    // Harga per cup untuk menu yang ditentukan
+    const hargaMenu = {
+      americano: 8000,
+      'creamy latte': 10000,
+      'brown sugar': 10000
+    };
+
+    let dataTransaksi = JSON.parse(localStorage.getItem('transaksi')) || [];
+
+    // Format input jumlah dengan titik tiap 3 digit, tapi simpan angka asli
+    jumlahInput.addEventListener('input', e => {
+      let angka = e.target.value.replace(/\D/g, '');
+      if(angka === '') {
+        e.target.value = '';
+        return;
+      }
+      e.target.value = angka.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    });
+
+    // Fungsi buat tanggal sekarang dalam format ISO (untuk penyimpanan dan filter)
+    function nowWaktu() {
+      return new Date().toISOString();
+    }
+
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const jenis = document.getElementById('jenis').value;
+      const keterangan = document.getElementById('keterangan').value.trim().toLowerCase();
+      const jumlahRaw = jumlahInput.value.replace(/\./g, '');
+      const jumlah = parseInt(jumlahRaw);
+
+      if (!keterangan || isNaN(jumlah)) return alert("Mohon isi semua data dengan benar!");
+
+      dataTransaksi.push({ waktu: nowWaktu(), jenis, keterangan, jumlah });
+      simpanDanTampilkan();
+      form.reset();
+    });
+
+    function formatRupiah(angka) {
+      return "Rp " + angka.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    }
+
+    // Hitung cup berdasarkan keterangan dan jumlah hanya untuk pemasukan
+    function hitungCup(keterangan, jumlah) {
+      keterangan = keterangan.toLowerCase();
+      for (const menu in hargaMenu) {
+        if (keterangan.includes(menu)) {
+          return Math.floor(jumlah / hargaMenu[menu]);
+        }
+      }
+      return 0;
+    }
+
+    // Fungsi untuk menampilkan data di tabel dan menghitung ringkasan
+    function tampilkanData() {
+      tbody.innerHTML = "";
+      let pemasukan = 0, pengeluaran = 0, gaji = 0;
+      const now = new Date();
+      const filterT = filterTanggal.value;
+      const filterJ = filterJenis.value;
+
+      dataTransaksi.forEach((t, i) => {
+        const waktuObj = new Date(t.waktu);
+
+        // Filter tanggal
+        const cocokTanggal = (
+          filterT === 'semua' ||
+          (filterT === 'hari_ini' && waktuObj.toDateString() === now.toDateString()) ||
+          (filterT === 'kemarin' && new Date(now.getTime() - 86400000).toDateString() === waktuObj.toDateString()) ||
+          (filterT === 'bulan_lalu' && waktuObj.getMonth() === (now.getMonth() === 0 ? 11 : now.getMonth() - 1) &&
+            waktuObj.getFullYear() === (now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear())) ||
+          (filterT === 'tahun_lalu' && waktuObj.getFullYear() === now.getFullYear() - 1)
+        );
+
+        // Filter jenis
+        const cocokJenis = (filterJ === 'semua' || t.jenis === filterJ);
+        if (!cocokTanggal || !cocokJenis) return;
+
+        // Hitung ringkasan
+        if (t.jenis === 'pemasukan') pemasukan += t.jumlah;
+        if (t.jenis === 'pengeluaran') pengeluaran += t.jumlah;
+        if (t.jenis === 'gaji') gaji += t.jumlah;
+
+        // Hitung cup hanya untuk pemasukan, kosongkan untuk jenis lain
+        const cup = (t.jenis === 'pemasukan') ? hitungCup(t.keterangan, t.jumlah) : '';
+
+        // Buat row tabel
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${waktuObj.toLocaleString('id-ID')}</td>
+          <td>${t.jenis}</td>
+          <td contenteditable="true" onblur="editData(${i}, 'keterangan', this.innerText.trim())">${t.keterangan}</td>
+          <td contenteditable="true" onblur="editJumlah(${i}, this.innerText)">${formatRupiah(t.jumlah)}</td>
+          <td>${cup > 0 ? cup + ' cup' : ''}</td>
+          <td><span class="hapus-btn" onclick="hapusData(${i})">Hapus</span></td>
+        `;
+        tbody.appendChild(row);
+      });
+
+      const laba = pemasukan - pengeluaran - gaji;
+      ringkasan.innerHTML = `
+        Total Pemasukan: ${formatRupiah(pemasukan)}<br>
+        Total Pengeluaran: ${formatRupiah(pengeluaran)}<br>
+        Total Gaji: ${formatRupiah(gaji)}<br>
+        <hr><strong>Laba / Rugi: ${formatRupiah(laba)}</strong>
+      `;
+    }
+
+    function simpanDanTampilkan() {
+      localStorage.setItem('transaksi', JSON.stringify(dataTransaksi));
+      tampilkanData();
+    }
+
+    function hapusData(i) {
+      if (confirm("Yakin ingin menghapus?")) {
+        dataTransaksi.splice(i, 1);
+        simpanDanTampilkan();
+      }
+    }
+
+    function editData(i, kolom, nilai) {
+      dataTransaksi[i][kolom] = nilai.toLowerCase();
+      simpanDanTampilkan();
+    }
+
+    // Fungsi khusus untuk edit jumlah supaya simpan angka asli dan update cup otomatis
+    function editJumlah(i, nilai) {
+      // Hilangkan semua non-digit
+      const angkaStr = nilai.replace(/\D/g, '');
+      const angka = parseInt(angkaStr);
+      if (isNaN(angka)) {
+        alert('Jumlah harus berupa angka!');
+        // revert ke nilai lama
+        tampilkanData();
+        return;
+      }
+      dataTransaksi[i].jumlah = angka;
+      simpanDanTampilkan();
+    }
+
+    // Perlu buat fungsi ini global supaya bisa dipanggil dari HTML inline onblur
+    window.hapusData = hapusData;
+    window.editData = editData;
+    window.editJumlah = editJumlah;
+
+    filterTanggal.addEventListener('change', tampilkanData);
+    filterJenis.addEventListener('change', tampilkanData);
+
+    exportBtn.addEventListener('click', () => {
+      // Buat data export dengan format waktu yang sudah diformat, dan cup
+      const exportData = dataTransaksi.map(t => {
+        const waktuStr = new Date(t.waktu).toLocaleString('id-ID');
+        const cup = (t.jenis === 'pemasukan') ? hitungCup(t.keterangan, t.jumlah) : '';
+        return {
+          Waktu: waktuStr,
+          Jenis: t.jenis,
+          Keterangan: t.keterangan,
+          Jumlah: t.jumlah,
+          Cup: cup > 0 ? cup : ''
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Transaksi");
+      XLSX.writeFile(wb, "catatan_keuangan.xlsx");
+    });
+
+    tampilkanData();
+  </script>
+</body>
+</html>
